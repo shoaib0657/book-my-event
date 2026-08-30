@@ -12,5 +12,6 @@ import lombok.NoArgsConstructor;
 public class VenueInventoryResponse {
     private Long venueId;
     private String venueName;
+    private String address;
     private Long totalCapacity;
 }
