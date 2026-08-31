@@ -1,11 +1,7 @@
 package com.shoaib.bookmyevent.bookingservice.response;
 
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import java.math.BigDecimal;
+import java.util.UUID;
 
-@Data
-@NoArgsConstructor
-@Builder
-public class BookingResponse {
+public record BookingResponse(UUID bookingId, BookingStatus status, BigDecimal totalPrice) {
 }

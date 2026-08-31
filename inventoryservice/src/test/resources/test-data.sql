@@ -1,3 +1,4 @@
+DELETE FROM inventory_reservation;
 DELETE FROM event;
 DELETE FROM venue;
 

@@ -1,9 +1,10 @@
 package com.shoaib.bookmyevent.inventoryservice.repository;
 
 import com.shoaib.bookmyevent.inventoryservice.entity.Event;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -23,16 +24,16 @@ public interface EventRepository extends JpaRepository<Event, Long> {
     @EntityGraph(attributePaths = "venue")
     Optional<Event> findById(Long id);
 
-    // Keep the availability check and decrement in one database statement so
-    // concurrent requests cannot reserve the same remaining capacity.
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            update Event event
-            set event.leftCapacity = event.leftCapacity - :ticketsBooked
-            where event.id = :eventId
-              and event.leftCapacity >= :ticketsBooked
-            """)
-    int decrementCapacityIfAvailable(
-            @Param("eventId") Long eventId,
-            @Param("ticketsBooked") Long ticketsBooked);
+    /**
+     * Loads an event while holding a database write lock for the lifetime of the current transaction.
+     *
+     * <p>Callers must use this method inside an active transaction before checking or changing capacity.</p>
+     *
+     * @param eventId event to lock
+     * @return the locked event, or an empty result when it does not exist
+     */
+    // Serialize capacity changes for one event; the lock is held until the service transaction ends.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select event from Event event where event.id = :eventId")
+    Optional<Event> findByIdForUpdate(@Param("eventId") Long eventId);
 }
