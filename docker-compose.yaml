@@ -1,0 +1,43 @@
+name: book-my-event
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # TCP avoids reporting the image's temporary initialization server as ready.
+      test: ["CMD-SHELL", "mysqladmin ping --protocol=TCP -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  mysql-bootstrap:
+    image: mysql:8.4
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      INVENTORY_DB_NAME: ${INVENTORY_DB_NAME:-inventory_db}
+      INVENTORY_DB_USERNAME: ${INVENTORY_DB_USERNAME:-inventory_user}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_password}
+      BOOKING_DB_NAME: ${BOOKING_DB_NAME:-booking_db}
+      BOOKING_DB_USERNAME: ${BOOKING_DB_USERNAME:-booking_user}
+      BOOKING_DB_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_password}
+      ORDER_DB_NAME: ${ORDER_DB_NAME:-order_db}
+      ORDER_DB_USERNAME: ${ORDER_DB_USERNAME:-order_user}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD:-order_password}
+    volumes:
+      - ./docker/mysql/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+
+volumes:
+  mysql-data:

@@ -1,2 +1,5 @@
 # Local editor settings
 .vscode/
+
+# Local environment overrides may contain credentials.
+.env
