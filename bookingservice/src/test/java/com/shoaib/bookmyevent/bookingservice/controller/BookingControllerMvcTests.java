@@ -1,6 +1,7 @@
 package com.shoaib.bookmyevent.bookingservice.controller;
 
 import com.shoaib.bookmyevent.bookingservice.exception.BookingConflictException;
+import com.shoaib.bookmyevent.bookingservice.exception.BookingEventPublicationException;
 import com.shoaib.bookmyevent.bookingservice.exception.InventoryServiceUnavailableException;
 import com.shoaib.bookmyevent.bookingservice.exception.ResourceNotFoundException;
 import com.shoaib.bookmyevent.bookingservice.exception.ApiExceptionHandler;
@@ -109,6 +110,17 @@ class BookingControllerMvcTests {
         mockMvc.perform(validRequest())
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.title").value("Inventory service unavailable"));
+    }
+
+    @Test
+    void mapsKafkaPublicationFailureToServiceUnavailableProblemDetail() throws Exception {
+        when(bookingService.createBooking(any())).thenThrow(new BookingEventPublicationException(
+                "Booking event could not be published", new IllegalStateException("Kafka unavailable")));
+
+        mockMvc.perform(validRequest())
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.title").value("Booking service unavailable"))
+                .andExpect(jsonPath("$.detail").value("Booking event could not be published"));
     }
 
     private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder validRequest() {

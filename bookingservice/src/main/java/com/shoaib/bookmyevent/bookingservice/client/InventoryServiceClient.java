@@ -70,6 +70,23 @@ public class InventoryServiceClient {
         }
     }
 
+    /**
+     * Releases a previously confirmed reservation during booking-flow compensation.
+     *
+     * @param bookingId identifier of the reservation to release
+     * @throws InventoryServiceUnavailableException when Inventory cannot confirm the release
+     */
+    public void release(final UUID bookingId) {
+        try {
+            restClient.put()
+                    .uri("/reservations/{bookingId}/release", bookingId)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (final RestClientException exception) {
+            throw new InventoryServiceUnavailableException("Inventory reservation could not be released", exception);
+        }
+    }
+
     private static void validateReservationResponse(
             final InventoryReservationResponse response, final InventoryReservationRequest request) {
         if (response == null

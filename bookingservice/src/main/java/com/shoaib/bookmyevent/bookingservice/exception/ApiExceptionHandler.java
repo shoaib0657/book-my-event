@@ -35,6 +35,11 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "Inventory service unavailable", exception.getMessage());
     }
 
+    @ExceptionHandler(BookingEventPublicationException.class)
+    ProblemDetail handleBookingEventPublication(final BookingEventPublicationException exception) {
+        return problem(HttpStatus.SERVICE_UNAVAILABLE, "Booking service unavailable", exception.getMessage());
+    }
+
     private static ProblemDetail problem(final HttpStatus status, final String title, final String detail) {
         final ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);

@@ -15,6 +15,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.http.HttpMethod.PUT;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -80,6 +81,26 @@ class InventoryServiceClientTests {
         server.expect(requestTo(BASE_URL + "/reservations")).andRespond(withServerError());
 
         assertThrows(InventoryServiceUnavailableException.class, () -> client.reserve(BOOKING_ID, 8L, 2L));
+    }
+
+    @Test
+    void releasesTheReservationUsingTheBookingId() {
+        server.expect(requestTo(BASE_URL + "/reservations/" + BOOKING_ID + "/release"))
+                .andExpect(method(PUT))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.NO_CONTENT));
+
+        client.release(BOOKING_ID);
+
+        server.verify();
+    }
+
+    @Test
+    void mapsReleaseFailuresToInventoryServiceUnavailable() {
+        server.expect(requestTo(BASE_URL + "/reservations/" + BOOKING_ID + "/release"))
+                .andExpect(method(PUT))
+                .andRespond(withServerError());
+
+        assertThrows(InventoryServiceUnavailableException.class, () -> client.release(BOOKING_ID));
     }
 
     @Test
