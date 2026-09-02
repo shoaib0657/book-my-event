@@ -45,13 +45,20 @@ class BookingserviceApplicationTests {
 		mockMvc.perform(get("/v3/api-docs/internal"))
 				.andExpect(status().isOk())
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.paths", aMapWithSize(1)))
-				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$['paths']['/api/v1/bookings']").exists());
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$['paths']['/api/v1/bookings']").exists())
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.security").doesNotExist())
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth").doesNotExist());
 
 		mockMvc.perform(get("/v3/api-docs/public"))
 				.andExpect(status().isOk())
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.paths", aMapWithSize(1)))
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$['paths']['/api/v1/bookings']").exists())
-				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.servers[0].url").value("/"));
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.servers[0].url").value("/"))
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth.type").value("http"))
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth.scheme").value("bearer"))
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth.bearerFormat").value("JWT"))
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.security[0].bearerAuth").isArray())
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.schemas.BookingRequest").exists());
 	}
 
 	@Test

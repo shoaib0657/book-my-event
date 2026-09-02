@@ -82,7 +82,9 @@ class InventoryControllerIntegrationTests {
                 .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}'].get.parameters[0].schema.format")
                         .value("int64"))
                 .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}'].get.parameters[0].schema.exclusiveMinimum")
-                        .value(0));
+                        .value(0))
+                .andExpect(jsonPath("$.security").doesNotExist())
+                .andExpect(jsonPath("$.components.securitySchemes.bearerAuth").doesNotExist());
 
         mockMvc.perform(get("/v3/api-docs/public"))
                 .andExpect(status().isOk())
@@ -98,7 +100,12 @@ class InventoryControllerIntegrationTests {
                         .value("int64"))
                 .andExpect(jsonPath("$['paths']['/api/v1/events/{eventId}'].get.parameters[0].schema.exclusiveMinimum")
                         .value(0))
-                .andExpect(jsonPath("$.servers[0].url").value("/"));
+                .andExpect(jsonPath("$.servers[0].url").value("/"))
+                .andExpect(jsonPath("$.components.securitySchemes.bearerAuth.type").value("http"))
+                .andExpect(jsonPath("$.components.securitySchemes.bearerAuth.scheme").value("bearer"))
+                .andExpect(jsonPath("$.components.securitySchemes.bearerAuth.bearerFormat").value("JWT"))
+                .andExpect(jsonPath("$.security[0].bearerAuth").isArray())
+                .andExpect(jsonPath("$.components.schemas.EventInventoryResponse").exists());
     }
 
     @Test

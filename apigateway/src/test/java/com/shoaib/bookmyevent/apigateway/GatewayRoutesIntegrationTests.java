@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.shoaib.bookmyevent.apigateway.support.TestOidcIssuer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,8 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class GatewayRoutesIntegrationTests {
 
+	private static final String API_AUDIENCE = "book-my-event-api";
 	private static final WireMockServer inventory = new WireMockServer(wireMockConfig().dynamicPort());
 	private static final WireMockServer booking = new WireMockServer(wireMockConfig().dynamicPort());
+	private static final TestOidcIssuer identityProvider = new TestOidcIssuer();
 
 	static {
 		inventory.start();
@@ -46,6 +49,8 @@ class GatewayRoutesIntegrationTests {
 	static void downstreamServices(DynamicPropertyRegistry registry) {
 		registry.add("gateway.services.inventory-base-url", inventory::baseUrl);
 		registry.add("gateway.services.booking-base-url", booking::baseUrl);
+		registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", identityProvider::issuerUri);
+		registry.add("spring.security.oauth2.resourceserver.jwt.audiences", () -> API_AUDIENCE);
 	}
 
 	@LocalServerPort
@@ -60,10 +65,92 @@ class GatewayRoutesIntegrationTests {
 		booking.resetAll();
 	}
 
+	@Test
+	void missingBearerTokenIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		HttpResponse<String> response = send(anonymousGetRequest("/api/v1/events").build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertThat(response.headers().firstValue("WWW-Authenticate"))
+				.hasValueSatisfying(value -> assertThat(value).startsWith("Bearer"));
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void malformedBearerTokenIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		HttpResponse<String> response = send(anonymousGetRequest("/api/v1/events")
+				.header("Authorization", "Bearer not-a-jwt")
+				.build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void tokenForAnotherAudienceIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		HttpResponse<String> response = send(requestWithToken(
+				"/api/v1/events",
+				identityProvider.validToken("another-api")).GET().build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void tokenFromAnotherIssuerIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		String token = identityProvider.token("https://issuer.example/realms/not-ours", API_AUDIENCE);
+		HttpResponse<String> response = send(requestWithToken("/api/v1/events", token).GET().build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void expiredTokenIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		HttpResponse<String> response = send(requestWithToken(
+				"/api/v1/events",
+				identityProvider.expiredToken(API_AUDIENCE)).GET().build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void tokenWithInvalidSignatureIsRejectedBeforeCallingDownstream() throws Exception {
+		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
+				.willReturn(aResponse().withStatus(200).withBody("[]")));
+
+		String validToken = identityProvider.validToken(API_AUDIENCE);
+		int signatureStart = validToken.lastIndexOf('.') + 1;
+		char replacement = validToken.charAt(signatureStart) == 'A' ? 'B' : 'A';
+		String tamperedToken = validToken.substring(0, signatureStart)
+				+ replacement
+				+ validToken.substring(signatureStart + 1);
+		HttpResponse<String> response = send(requestWithToken("/api/v1/events", tamperedToken).GET().build());
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
 	@AfterAll
 	static void stopDownstreams() {
 		inventory.stop();
 		booking.stop();
+		identityProvider.stop();
 	}
 
 	@Test
@@ -123,6 +210,7 @@ class GatewayRoutesIntegrationTests {
 						.withBody("{\"title\":\"Seats unavailable\"}")));
 
 		HttpRequest request = HttpRequest.newBuilder(gatewayUri("/api/v1/bookings"))
+				.header("Authorization", bearerToken())
 				.header("Content-Type", "application/json")
 				.header("X-Idempotency-Key", "booking-789")
 				.POST(HttpRequest.BodyPublishers.ofString(requestBody))
@@ -161,19 +249,22 @@ class GatewayRoutesIntegrationTests {
 	void internalOrderAndUnknownRoutesStayBlockedAtGateway() throws Exception {
 		assertThat(send(getRequest("/api/v1/inventory/reservations").build()).statusCode()).isEqualTo(404);
 		assertThat(send(HttpRequest.newBuilder(gatewayUri("/api/v1/inventory/reservations/abc/release"))
+				.header("Authorization", bearerToken())
 				.POST(HttpRequest.BodyPublishers.noBody()).build()).statusCode()).isEqualTo(404);
 		assertThat(send(getRequest("/api/v1/inventory/venue/2").build()).statusCode()).isEqualTo(404);
 		assertThat(send(getRequest("/api/v1/orders/99").build()).statusCode()).isEqualTo(404);
-		assertThat(send(getRequest("/does-not-exist").build()).statusCode()).isEqualTo(404);
+		assertThat(send(anonymousGetRequest("/does-not-exist").build()).statusCode()).isEqualTo(404);
 		assertNoDownstreamRequests();
 	}
 
 	@Test
 	void wrongMethodsOnPublicPathsStayBlockedAtGateway() throws Exception {
 		HttpRequest postEvents = HttpRequest.newBuilder(gatewayUri("/api/v1/events"))
+				.header("Authorization", bearerToken())
 				.POST(HttpRequest.BodyPublishers.noBody())
 				.build();
 		HttpRequest deleteEventDetail = HttpRequest.newBuilder(gatewayUri("/api/v1/events/41"))
+				.header("Authorization", bearerToken())
 				.DELETE()
 				.build();
 		HttpRequest getBookings = getRequest("/api/v1/bookings").build();
@@ -187,6 +278,7 @@ class GatewayRoutesIntegrationTests {
 	@Test
 	void internalInventoryRoutesStayBlockedForTheirActualMethods() throws Exception {
 		HttpRequest createReservation = HttpRequest.newBuilder(gatewayUri("/api/v1/inventory/reservations"))
+				.header("Authorization", bearerToken())
 				.header("Content-Type", "application/json")
 				.POST(HttpRequest.BodyPublishers.ofString("""
 						{"bookingId":"11111111-1111-1111-1111-111111111111","eventId":41,"ticketCount":2}
@@ -194,6 +286,7 @@ class GatewayRoutesIntegrationTests {
 				.build();
 		HttpRequest releaseReservation = HttpRequest.newBuilder(
 					gatewayUri("/api/v1/inventory/reservations/11111111-1111-1111-1111-111111111111/release"))
+				.header("Authorization", bearerToken())
 				.PUT(HttpRequest.BodyPublishers.noBody())
 				.build();
 
@@ -215,7 +308,7 @@ class GatewayRoutesIntegrationTests {
 						.withHeader("Content-Type", "application/json")
 						.withBody("{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Inventory\"}}")));
 
-		HttpResponse<String> response = send(getRequest("/docs/inventory/v3/api-docs/public").build());
+		HttpResponse<String> response = send(anonymousGetRequest("/docs/inventory/v3/api-docs/public").build());
 
 		assertThat(response.statusCode()).isEqualTo(200);
 		assertThat(response.headers().firstValue("Content-Type")).hasValue("application/json");
@@ -231,7 +324,7 @@ class GatewayRoutesIntegrationTests {
 						.withHeader("Content-Type", "application/json")
 						.withBody("{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Booking\"}}")));
 
-		HttpResponse<String> response = send(getRequest("/docs/booking/v3/api-docs/public").build());
+		HttpResponse<String> response = send(anonymousGetRequest("/docs/booking/v3/api-docs/public").build());
 
 		assertThat(response.statusCode()).isEqualTo(200);
 		assertThat(response.headers().firstValue("Content-Type")).hasValue("application/json");
@@ -241,10 +334,10 @@ class GatewayRoutesIntegrationTests {
 
 	@Test
 	void swaggerUiAndItsTwoDefinitionConfigurationAreAvailable() throws Exception {
-		HttpResponse<String> entryPoint = send(getRequest("/swagger-ui.html").build());
+		HttpResponse<String> entryPoint = send(anonymousGetRequest("/swagger-ui.html").build());
 
 		assertThat(entryPoint.statusCode()).isIn(200, 302);
-		HttpResponse<String> config = send(getRequest("/v3/api-docs/swagger-config").build());
+		HttpResponse<String> config = send(anonymousGetRequest("/v3/api-docs/swagger-config").build());
 		assertThat(config.statusCode()).isEqualTo(200);
 
 		JsonNode swaggerConfig = objectMapper.readTree(config.body());
@@ -261,7 +354,19 @@ class GatewayRoutesIntegrationTests {
 	}
 
 	private HttpRequest.Builder getRequest(String path) {
+		return requestWithToken(path, identityProvider.validToken(API_AUDIENCE)).GET();
+	}
+
+	private HttpRequest.Builder anonymousGetRequest(String path) {
 		return HttpRequest.newBuilder(gatewayUri(path)).GET();
+	}
+
+	private HttpRequest.Builder requestWithToken(String path, String token) {
+		return HttpRequest.newBuilder(gatewayUri(path)).header("Authorization", "Bearer " + token);
+	}
+
+	private String bearerToken() {
+		return "Bearer " + identityProvider.validToken(API_AUDIENCE);
 	}
 
 	private URI gatewayUri(String path) {

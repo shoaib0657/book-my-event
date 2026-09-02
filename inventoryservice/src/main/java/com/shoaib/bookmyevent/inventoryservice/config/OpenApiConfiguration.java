@@ -1,6 +1,9 @@
 package com.shoaib.bookmyevent.inventoryservice.config;
 
+import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.servers.Server;
 import org.springdoc.core.models.GroupedOpenApi;
 import org.springframework.context.annotation.Bean;
@@ -35,6 +38,17 @@ public class OpenApiConfiguration {
                             servicePaths.get("/api/v1/inventory/event/{eventId}"));
                     openApi.setPaths(gatewayPaths);
                     openApi.setServers(List.of(new Server().url("/")));
+                    final Components components = openApi.getComponents() == null
+                            ? new Components()
+                            : openApi.getComponents();
+                    components.addSecuritySchemes(
+                            "bearerAuth",
+                            new SecurityScheme()
+                                    .type(SecurityScheme.Type.HTTP)
+                                    .scheme("bearer")
+                                    .bearerFormat("JWT"));
+                    openApi.setComponents(components);
+                    openApi.addSecurityItem(new SecurityRequirement().addList("bearerAuth"));
                 })
                 .build();
     }
