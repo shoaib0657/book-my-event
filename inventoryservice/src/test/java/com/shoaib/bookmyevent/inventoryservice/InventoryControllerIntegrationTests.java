@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import static org.hamcrest.Matchers.aMapWithSize;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -59,6 +60,46 @@ class InventoryControllerIntegrationTests {
 
     @Autowired
     private EventRepository eventRepository;
+
+    @Test
+    void exposesSeparateInternalAndGatewayPublicOpenApiDocuments() throws Exception {
+        mockMvc.perform(get("/v3/api-docs/internal"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths", aMapWithSize(5)))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/events']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/venue/{venueId}']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/reservations']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/reservations/{bookingId}/release']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/venue/{venueId}'].get.parameters[0].schema.type")
+                        .value("integer"))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/venue/{venueId}'].get.parameters[0].schema.format")
+                        .value("int64"))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/venue/{venueId}'].get.parameters[0].schema.exclusiveMinimum")
+                        .value(0))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}'].get.parameters[0].schema.type")
+                        .value("integer"))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}'].get.parameters[0].schema.format")
+                        .value("int64"))
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/event/{eventId}'].get.parameters[0].schema.exclusiveMinimum")
+                        .value(0));
+
+        mockMvc.perform(get("/v3/api-docs/public"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths", aMapWithSize(2)))
+                .andExpect(jsonPath("$['paths']['/api/v1/events']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/events/{eventId}']").exists())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/venue/{venueId}']").doesNotExist())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/reservations']").doesNotExist())
+                .andExpect(jsonPath("$['paths']['/api/v1/inventory/reservations/{bookingId}/release']").doesNotExist())
+                .andExpect(jsonPath("$['paths']['/api/v1/events/{eventId}'].get.parameters[0].schema.type")
+                        .value("integer"))
+                .andExpect(jsonPath("$['paths']['/api/v1/events/{eventId}'].get.parameters[0].schema.format")
+                        .value("int64"))
+                .andExpect(jsonPath("$['paths']['/api/v1/events/{eventId}'].get.parameters[0].schema.exclusiveMinimum")
+                        .value(0))
+                .andExpect(jsonPath("$.servers[0].url").value("/"));
+    }
 
     @Test
     void returnsNotFoundWhenVenueDoesNotExist() throws Exception {

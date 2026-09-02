@@ -1,10 +1,12 @@
 package com.shoaib.bookmyevent.bookingservice.request;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 
+@Schema(description = "Booking request")
 public record BookingRequest(
-        @NotNull @Positive Long customerId,
-        @NotNull @Positive Long eventId,
-        @NotNull @Positive Long ticketCount) {
+        @Schema(description = "Customer placing the booking", example = "41") @NotNull @Positive Long customerId,
+        @Schema(description = "Event to book", example = "8") @NotNull @Positive Long eventId,
+        @Schema(description = "Number of tickets to book", example = "2") @NotNull @Positive Long ticketCount) {
 }
