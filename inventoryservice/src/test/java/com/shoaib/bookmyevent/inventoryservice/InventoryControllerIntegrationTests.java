@@ -86,6 +86,11 @@ class InventoryControllerIntegrationTests {
                 .andExpect(jsonPath("$.security").doesNotExist())
                 .andExpect(jsonPath("$.components.securitySchemes.bearerAuth").doesNotExist());
 
+        mockMvc.perform(get("/v3/api-docs/internal"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath(
+                        "$.components.schemas.CreateReservationRequest.properties.ticketCount.maximum").value(100));
+
         mockMvc.perform(get("/v3/api-docs/public"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paths", aMapWithSize(2)))
@@ -152,6 +157,7 @@ class InventoryControllerIntegrationTests {
 
     @Test
     void preventsConcurrentReservationsFromOversellingAnEvent() throws Exception {
+        jdbcTemplate.update("UPDATE event SET total_capacity = 150, left_capacity = 150 WHERE id = 3");
         final ExecutorService executor = Executors.newFixedThreadPool(2);
         final CountDownLatch ready = new CountDownLatch(2);
         final CountDownLatch start = new CountDownLatch(1);
@@ -161,7 +167,7 @@ class InventoryControllerIntegrationTests {
             return mockMvc.perform(post("/api/v1/inventory/reservations")
                             .contentType(APPLICATION_JSON)
                             .content("""
-                                    {"bookingId":"%s","eventId":3,"ticketCount":30000}
+                                    {"bookingId":"%s","eventId":3,"ticketCount":100}
                                     """.formatted(java.util.UUID.randomUUID())))
                     .andReturn()
                     .getResponse()
@@ -185,7 +191,7 @@ class InventoryControllerIntegrationTests {
 
             mockMvc.perform(get("/api/v1/inventory/event/{eventId}", 3))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.remainingCapacity").value(10_000));
+                    .andExpect(jsonPath("$.remainingCapacity").value(50));
         } finally {
             executor.shutdownNow();
         }
@@ -201,6 +207,25 @@ class InventoryControllerIntegrationTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.title").value("Invalid request"))
                 .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void rejectsReservationsAboveTheMaximumWithoutChangingInventory() throws Exception {
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"bookingId":"12121212-1212-1212-1212-121212121212","eventId":3,"ticketCount":101}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Invalid request"))
+                .andExpect(jsonPath("$.status").value(400));
+
+        mockMvc.perform(get("/api/v1/inventory/event/{eventId}", 3))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.remainingCapacity").value(40_000));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM inventory_reservation WHERE booking_id = ?", Integer.class,
+                "12121212-1212-1212-1212-121212121212"));
     }
 
     @Test
@@ -272,10 +297,11 @@ class InventoryControllerIntegrationTests {
 
     @Test
     void returnsConflictWithoutReservationOrCapacityChangeWhenTicketsAreUnavailable() throws Exception {
+        jdbcTemplate.update("UPDATE event SET total_capacity = 99, left_capacity = 99 WHERE id = 3");
         mockMvc.perform(post("/api/v1/inventory/reservations")
                         .contentType(APPLICATION_JSON)
                         .content("""
-                                {"bookingId":"44444444-4444-4444-4444-444444444444","eventId":3,"ticketCount":40001}
+                                {"bookingId":"44444444-4444-4444-4444-444444444444","eventId":3,"ticketCount":100}
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.title").value("Insufficient capacity"))
@@ -283,7 +309,7 @@ class InventoryControllerIntegrationTests {
 
         mockMvc.perform(get("/api/v1/inventory/event/{eventId}", 3))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.remainingCapacity").value(40_000));
+                .andExpect(jsonPath("$.remainingCapacity").value(99));
         assertEquals(0, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM inventory_reservation WHERE booking_id = ?", Integer.class,
                 "44444444-4444-4444-4444-444444444444"));
@@ -335,6 +361,11 @@ class InventoryControllerIntegrationTests {
                         INSERT INTO inventory_reservation
                             (booking_id, event_id, ticket_count, unit_price, total_price, status)
                         VALUES ('66666666-6666-6666-6666-666666666666', 3, 0, 10.00, 0.00, 'RESERVED')
+                        """)),
+                () -> assertThrows(DataAccessException.class, () -> jdbcTemplate.update("""
+                        INSERT INTO inventory_reservation
+                            (booking_id, event_id, ticket_count, unit_price, total_price, status)
+                        VALUES ('67676767-6767-6767-6767-676767676767', 3, 101, 10.00, 1010.00, 'RESERVED')
                         """)),
                 () -> assertThrows(DataAccessException.class, () -> jdbcTemplate.update("""
                         INSERT INTO inventory_reservation

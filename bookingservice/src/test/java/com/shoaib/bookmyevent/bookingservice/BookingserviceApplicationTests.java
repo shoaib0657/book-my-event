@@ -69,7 +69,9 @@ class BookingserviceApplicationTests {
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth.scheme").value("bearer"))
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.securitySchemes.bearerAuth.bearerFormat").value("JWT"))
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.security[0].bearerAuth").isArray())
-				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.schemas.BookingRequest").exists());
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.components.schemas.BookingRequest").exists())
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath(
+						"$.components.schemas.BookingRequest.properties.ticketCount.maximum").value(100));
 	}
 
 	@Test

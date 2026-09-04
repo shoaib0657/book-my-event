@@ -3,3 +3,6 @@
 
 # Local environment overrides may contain credentials.
 .env
+
+# JVM crash reports
+hs_err_pid*.log

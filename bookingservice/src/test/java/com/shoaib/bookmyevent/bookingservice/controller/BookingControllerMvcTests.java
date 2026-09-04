@@ -69,6 +69,19 @@ class BookingControllerMvcTests {
     }
 
     @Test
+    void rejectsBookingsAboveTheMaximumTicketCount() throws Exception {
+        final UUID bookingId = UUID.fromString("13c2a07c-2c04-416e-9e3f-a4c9e1a81b9e");
+        when(bookingService.createBooking(any())).thenReturn(
+                new BookingResponse(bookingId, BookingStatus.RESERVED, new BigDecimal("1010.00")));
+
+        mockMvc.perform(post("/api/v1/bookings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":41,\"eventId\":8,\"ticketCount\":101}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Invalid request"));
+    }
+
+    @Test
     void rejectsAMissingRequestBodyAsInvalidRequest() throws Exception {
         mockMvc.perform(post("/api/v1/bookings").contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isBadRequest())
