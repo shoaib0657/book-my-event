@@ -23,8 +23,12 @@ public class SecurityConfig {
 								"/swagger-ui/**",
 								"/v3/api-docs/**",
 								"/docs/**",
-								"/error")
+								"/error",
+								"/actuator/health",
+								"/actuator/info")
 						.permitAll()
+						.requestMatchers("/actuator/**").authenticated()
+						.requestMatchers("/internal/fallback/**").authenticated()
 						.requestMatchers("/api/v1/**").authenticated()
 						// Let Spring Cloud Gateway return 404 for paths it does not publish.
 						.anyRequest().permitAll())

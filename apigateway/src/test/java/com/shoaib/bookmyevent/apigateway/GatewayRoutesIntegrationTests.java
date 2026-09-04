@@ -9,10 +9,14 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.http.Fault;
 import com.shoaib.bookmyevent.apigateway.support.TestOidcIssuer;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -56,6 +60,9 @@ class GatewayRoutesIntegrationTests {
 	@LocalServerPort
 	private int gatewayPort;
 
+	@Autowired
+	private CircuitBreakerRegistry circuitBreakerRegistry;
+
 	private final HttpClient client = HttpClient.newHttpClient();
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -63,6 +70,7 @@ class GatewayRoutesIntegrationTests {
 	void resetDownstreams() {
 		inventory.resetAll();
 		booking.resetAll();
+		circuitBreakerRegistry.circuitBreaker("bookingServiceGateway").reset();
 	}
 
 	@Test
@@ -230,6 +238,118 @@ class GatewayRoutesIntegrationTests {
 	}
 
 	@Test
+	void bookingServiceUnavailableResponsePassesThroughWithoutGatewayFallback() throws Exception {
+		String problemBody = "{\"title\":\"Inventory service unavailable\",\"status\":503}";
+		booking.stubFor(post(urlEqualTo("/api/v1/bookings"))
+				.willReturn(aResponse()
+						.withStatus(503)
+						.withHeader("Content-Type", "application/problem+json")
+						.withHeader("Retry-After", "20")
+						.withBody(problemBody)));
+
+		HttpResponse<String> response = send(bookingRequest());
+
+		assertThat(response.statusCode()).isEqualTo(503);
+		assertThat(response.headers().firstValue("Content-Type")).hasValue("application/problem+json");
+		assertThat(response.headers().firstValue("Retry-After")).hasValue("20");
+		assertThat(response.body()).isEqualTo(problemBody);
+		booking.verify(1, postRequestedFor(urlEqualTo("/api/v1/bookings")));
+		assertThat(circuitBreakerRegistry.circuitBreaker("bookingServiceGateway").getMetrics().getNumberOfFailedCalls())
+				.isZero();
+	}
+
+	@Test
+	void bookingTransportFailureReturnsSanitizedServiceUnavailableProblem() throws Exception {
+		booking.stubFor(post(urlEqualTo("/api/v1/bookings"))
+				.willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+
+		HttpResponse<String> response = send(bookingRequest());
+
+		assertThat(response.statusCode()).isEqualTo(503);
+		assertThat(response.headers().firstValue("Content-Type"))
+				.hasValueSatisfying(value -> assertThat(value).startsWith("application/problem+json"));
+		JsonNode problem = objectMapper.readTree(response.body());
+		assertThat(problem.path("status").asInt()).isEqualTo(503);
+		assertThat(problem.path("title").asText()).isEqualTo("Booking service unavailable");
+		assertThat(problem.path("detail").asText())
+				.isEqualTo("Booking Service is temporarily unavailable. Please try again later.");
+		assertThat(response.body()).doesNotContain("Exception", "localhost:8081");
+		booking.verify(1, postRequestedFor(urlEqualTo("/api/v1/bookings")));
+	}
+
+	@Test
+	void repeatedBookingTransportFailuresOpenTheCircuitAndStopDownstreamCalls() throws Exception {
+		booking.stubFor(post(urlEqualTo("/api/v1/bookings"))
+				.willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+
+		for (int attempt = 0; attempt < 6; attempt++) {
+			HttpResponse<String> response = send(bookingRequest());
+			assertThat(response.statusCode()).isEqualTo(503);
+		}
+
+		booking.verify(5, postRequestedFor(urlEqualTo("/api/v1/bookings")));
+		assertThat(circuitBreakerRegistry.circuitBreaker("bookingServiceGateway").getState())
+				.isEqualTo(io.github.resilience4j.circuitbreaker.CircuitBreaker.State.OPEN);
+	}
+
+	@Test
+	void anonymousCallerCannotInvokeTheInternalBookingFallback() throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(gatewayUri("/internal/fallback/booking-service"))
+				.POST(HttpRequest.BodyPublishers.noBody())
+				.build();
+
+		HttpResponse<String> response = send(request);
+
+		assertThat(response.statusCode()).isEqualTo(401);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void authenticatedDirectFallbackCallCannotManufactureServiceUnavailable() throws Exception {
+		HttpRequest request = HttpRequest.newBuilder(gatewayUri("/internal/fallback/booking-service"))
+				.header("Authorization", bearerToken())
+				.POST(HttpRequest.BodyPublishers.noBody())
+				.build();
+
+		HttpResponse<String> response = send(request);
+
+		assertThat(response.statusCode()).isEqualTo(404);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void gatewayHealthEndpointIsPublic() throws Exception {
+		HttpResponse<String> response = send(anonymousGetRequest("/actuator/health").build());
+
+		assertThat(response.statusCode()).isEqualTo(200);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void detailedGatewayActuatorEndpointsRequireJwtAndKeepEnvironmentHidden() throws Exception {
+		assertThat(send(anonymousGetRequest("/actuator/metrics").build()).statusCode()).isEqualTo(401);
+		assertThat(send(getRequest("/actuator/metrics").build()).statusCode()).isEqualTo(200);
+		assertThat(send(getRequest("/actuator/circuitbreakers").build()).statusCode()).isEqualTo(200);
+		assertThat(send(getRequest("/actuator/env").build()).statusCode()).isEqualTo(404);
+		assertNoDownstreamRequests();
+	}
+
+	@Test
+	void gatewayBookingCircuitUsesTheExplicitFailurePolicy() {
+		CircuitBreakerConfig config = circuitBreakerRegistry
+				.circuitBreaker("bookingServiceGateway")
+				.getCircuitBreakerConfig();
+
+		assertThat(config.getSlidingWindowType()).isEqualTo(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED);
+		assertThat(config.getSlidingWindowSize()).isEqualTo(10);
+		assertThat(config.getMinimumNumberOfCalls()).isEqualTo(5);
+		assertThat(config.getFailureRateThreshold()).isEqualTo(50.0F);
+		assertThat(config.getWaitIntervalFunctionInOpenState().apply(1)).isEqualTo(20_000L);
+		assertThat(config.getPermittedNumberOfCallsInHalfOpenState()).isEqualTo(3);
+		assertThat(config.isAutomaticTransitionFromOpenToHalfOpenEnabled()).isTrue();
+	}
+
+	@Test
 	void listEventsPassesDownstream503WithoutFallback() throws Exception {
 		inventory.stubFor(get(urlEqualTo("/api/v1/inventory/events"))
 				.willReturn(aResponse()
@@ -367,6 +487,15 @@ class GatewayRoutesIntegrationTests {
 
 	private String bearerToken() {
 		return "Bearer " + identityProvider.validToken(API_AUDIENCE);
+	}
+
+	private HttpRequest bookingRequest() {
+		return HttpRequest.newBuilder(gatewayUri("/api/v1/bookings"))
+				.header("Authorization", bearerToken())
+				.header("Content-Type", "application/json")
+				.POST(HttpRequest.BodyPublishers.ofString(
+						"{\"customerId\":1,\"eventId\":41,\"ticketCount\":2}"))
+				.build();
 	}
 
 	private URI gatewayUri(String path) {
