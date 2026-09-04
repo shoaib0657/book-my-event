@@ -3,7 +3,9 @@ package com.shoaib.bookmyevent.bookingservice.client;
 import com.shoaib.bookmyevent.bookingservice.exception.BookingConflictException;
 import com.shoaib.bookmyevent.bookingservice.exception.InventoryServiceUnavailableException;
 import com.shoaib.bookmyevent.bookingservice.exception.ResourceNotFoundException;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreaker;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -22,10 +24,14 @@ import java.util.UUID;
 public class InventoryServiceClient {
 
     private final RestClient restClient;
+    private final CircuitBreaker reservationCircuitBreaker;
 
     public InventoryServiceClient(final RestClient.Builder restClientBuilder,
-                                  @Value("${inventory.service.url}") final String inventoryServiceUrl) {
+                                  @Value("${inventory.service.url}") final String inventoryServiceUrl,
+                                  @Qualifier("inventoryServiceCircuitBreaker")
+                                  final CircuitBreaker reservationCircuitBreaker) {
         this.restClient = restClientBuilder.baseUrl(inventoryServiceUrl).build();
+        this.reservationCircuitBreaker = reservationCircuitBreaker;
     }
 
     /**
@@ -42,7 +48,12 @@ public class InventoryServiceClient {
     public InventoryReservationResponse reserve(
             final UUID bookingId, final Long eventId, final Long ticketCount) {
         final InventoryReservationRequest request = new InventoryReservationRequest(bookingId, eventId, ticketCount);
+        return reservationCircuitBreaker.run(
+                () -> reserveFromInventory(request),
+                InventoryServiceClient::throwReservationFailure);
+    }
 
+    private InventoryReservationResponse reserveFromInventory(final InventoryReservationRequest request) {
         // Keep Inventory's HTTP details here so BookingService only deals with domain failures.
         try {
             final InventoryReservationResponse response = restClient.post()
@@ -68,6 +79,19 @@ public class InventoryServiceClient {
         } catch (final RestClientException exception) {
             throw new InventoryServiceUnavailableException("Inventory service request failed", exception);
         }
+    }
+
+    private static InventoryReservationResponse throwReservationFailure(final Throwable failure) {
+        if (failure instanceof ResourceNotFoundException resourceNotFound) {
+            throw resourceNotFound;
+        }
+        if (failure instanceof BookingConflictException bookingConflict) {
+            throw bookingConflict;
+        }
+        if (failure instanceof InventoryServiceUnavailableException inventoryUnavailable) {
+            throw inventoryUnavailable;
+        }
+        throw new InventoryServiceUnavailableException("Inventory service is temporarily unavailable", failure);
     }
 
     /**

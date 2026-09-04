@@ -3,14 +3,18 @@ package com.shoaib.bookmyevent.bookingservice.client;
 import com.shoaib.bookmyevent.bookingservice.exception.BookingConflictException;
 import com.shoaib.bookmyevent.bookingservice.exception.InventoryServiceUnavailableException;
 import com.shoaib.bookmyevent.bookingservice.exception.ResourceNotFoundException;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreaker;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.test.web.client.MockRestServiceServer;
 
 import java.math.BigDecimal;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -19,6 +23,7 @@ import static org.springframework.http.HttpMethod.PUT;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 
@@ -34,7 +39,7 @@ class InventoryServiceClientTests {
     void setUp() {
         final RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
-        client = new InventoryServiceClient(builder, BASE_URL);
+        client = new InventoryServiceClient(builder, BASE_URL, passThroughCircuitBreaker());
     }
 
     @Test
@@ -81,6 +86,44 @@ class InventoryServiceClientTests {
         server.expect(requestTo(BASE_URL + "/reservations")).andRespond(withServerError());
 
         assertThrows(InventoryServiceUnavailableException.class, () -> client.reserve(BOOKING_ID, 8L, 2L));
+    }
+
+    @Test
+    void returnsServiceUnavailableWithoutCallingInventoryWhenTheCircuitIsOpen() {
+        final RestClient.Builder builder = RestClient.builder();
+        final MockRestServiceServer unusedServer = MockRestServiceServer.bindTo(builder).build();
+        final io.github.resilience4j.circuitbreaker.CircuitBreaker openCircuit =
+                io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("inventoryService");
+        openCircuit.transitionToOpenState();
+        final CallNotPermittedException rejection =
+                CallNotPermittedException.createCallNotPermittedException(openCircuit);
+        final InventoryServiceClient blockedClient =
+                new InventoryServiceClient(builder, BASE_URL, rejectingCircuitBreaker(rejection));
+
+        assertThrows(InventoryServiceUnavailableException.class,
+                () -> blockedClient.reserve(BOOKING_ID, 8L, 2L));
+        unusedServer.verify();
+    }
+
+    @Test
+    void releasesTheReservationEvenWhenNewReservationsAreBlocked() {
+        final RestClient.Builder builder = RestClient.builder();
+        final MockRestServiceServer releaseServer = MockRestServiceServer.bindTo(builder).build();
+        final io.github.resilience4j.circuitbreaker.CircuitBreaker openCircuit =
+                io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("inventoryService");
+        openCircuit.transitionToOpenState();
+        final CallNotPermittedException rejection =
+                CallNotPermittedException.createCallNotPermittedException(openCircuit);
+        final InventoryServiceClient blockedClient =
+                new InventoryServiceClient(builder, BASE_URL, rejectingCircuitBreaker(rejection));
+
+        releaseServer.expect(requestTo(BASE_URL + "/reservations/" + BOOKING_ID + "/release"))
+                .andExpect(method(PUT))
+                .andRespond(withSuccess());
+
+        blockedClient.release(BOOKING_ID);
+
+        releaseServer.verify();
     }
 
     @Test
@@ -164,6 +207,28 @@ class InventoryServiceClientTests {
                         .body(body));
 
         assertThrows(InventoryServiceUnavailableException.class, () -> client.reserve(BOOKING_ID, 8L, 2L));
+    }
+
+    private static CircuitBreaker passThroughCircuitBreaker() {
+        return new CircuitBreaker() {
+            @Override
+            public <T> T run(final Supplier<T> toRun, final Function<Throwable, T> fallback) {
+                try {
+                    return toRun.get();
+                } catch (final Throwable failure) {
+                    return fallback.apply(failure);
+                }
+            }
+        };
+    }
+
+    private static CircuitBreaker rejectingCircuitBreaker(final Throwable rejection) {
+        return new CircuitBreaker() {
+            @Override
+            public <T> T run(final Supplier<T> toRun, final Function<Throwable, T> fallback) {
+                return fallback.apply(rejection);
+            }
+        };
     }
 
     private static String reservationResponse(final UUID bookingId, final Long eventId, final Long ticketCount, final String status) {

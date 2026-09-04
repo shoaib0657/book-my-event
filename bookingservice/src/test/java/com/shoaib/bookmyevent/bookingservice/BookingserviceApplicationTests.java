@@ -1,7 +1,13 @@
 package com.shoaib.bookmyevent.bookingservice;
 
 import com.shoaib.bookmyevent.bookingservice.entity.Customer;
+import com.shoaib.bookmyevent.bookingservice.exception.BookingConflictException;
+import com.shoaib.bookmyevent.bookingservice.exception.InventoryServiceUnavailableException;
+import com.shoaib.bookmyevent.bookingservice.exception.ResourceNotFoundException;
 import com.shoaib.bookmyevent.bookingservice.repository.CustomerRepository;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,8 +22,10 @@ import org.testcontainers.mysql.MySQLContainer;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.hamcrest.Matchers.aMapWithSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -39,6 +47,9 @@ class BookingserviceApplicationTests {
 
 	@Autowired
 	private MockMvc mockMvc;
+
+	@Autowired
+	private CircuitBreakerRegistry circuitBreakerRegistry;
 
 	@Test
 	void exposesSeparateInternalAndGatewayPublicOpenApiDocuments() throws Exception {
@@ -63,6 +74,40 @@ class BookingserviceApplicationTests {
 
 	@Test
 	void contextLoads() {
+	}
+
+	@Test
+	void configuresTheInventoryCircuitForInfrastructureFailuresOnly() {
+		final CircuitBreakerConfig config =
+				circuitBreakerRegistry.circuitBreaker("inventoryService").getCircuitBreakerConfig();
+
+		assertEquals(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED, config.getSlidingWindowType());
+		assertEquals(10, config.getSlidingWindowSize());
+		assertEquals(5, config.getMinimumNumberOfCalls());
+		assertEquals(50.0F, config.getFailureRateThreshold());
+		assertEquals(3, config.getPermittedNumberOfCallsInHalfOpenState());
+		assertEquals(20_000L, config.getWaitIntervalFunctionInOpenState().apply(1));
+		assertTrue(config.isAutomaticTransitionFromOpenToHalfOpenEnabled());
+		assertTrue(config.getRecordExceptionPredicate().test(
+				new InventoryServiceUnavailableException("Inventory failed")));
+		assertFalse(config.getIgnoreExceptionPredicate().test(
+				new InventoryServiceUnavailableException("Inventory failed")));
+		assertTrue(config.getIgnoreExceptionPredicate().test(
+				new ResourceNotFoundException("Event not found")));
+		assertTrue(config.getIgnoreExceptionPredicate().test(
+				new BookingConflictException("Capacity unavailable")));
+	}
+
+	@Test
+	void exposesHealthMetricsAndCircuitStateWithoutExposingEveryActuatorEndpoint() throws Exception {
+		mockMvc.perform(get("/actuator/health"))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/actuator/metrics"))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/actuator/circuitbreakers"))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/actuator/env"))
+				.andExpect(status().isNotFound());
 	}
 
 	@Test
